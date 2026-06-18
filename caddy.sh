@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 CADDY_BIN="/usr/local/bin/caddy"
 CADDY_VERSION="${CADDY_VERSION:-v2.11.4}"
-SCRIPT_URL="${SCRIPT_URL:-https://raw.githubusercontent.com/kuss0/caddy.sh/main/caddy.sh}"
+SCRIPT_URL="${SCRIPT_URL:-https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/caddy.sh}"
 CADDY_CONFIG="/etc/caddy"
 CADDYFILE="${CADDY_CONFIG}/Caddyfile"
 SITES_DIR="${CADDY_CONFIG}/conf.d"
@@ -76,7 +76,7 @@ download_file() {
 
 read_token() {
   local token
-  [[ -r /dev/tty ]] || fail "No TTY available for secure token input. Run interactively, for example: bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
+  [[ -r /dev/tty ]] || fail "No TTY available for secure token input. Run interactively, for example: bash <(wget -qO- https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/install.sh)"
   printf 'Cloudflare API Token: ' >&2
   read -r -s token < /dev/tty
   printf '\n' >&2

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_URL="${SCRIPT_URL:-https://github.com/kuss0/caddy.sh/raw/main/caddy.sh}"
+SCRIPT_URL="${SCRIPT_URL:-https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/caddy.sh}"
 INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin/caddy.sh}"
 RUN_INIT="true"
 
@@ -41,7 +41,7 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 
-[[ "${EUID}" -eq 0 ]] || fail "Run as root, for example: bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
+[[ "${EUID}" -eq 0 ]] || fail "Run as root, for example: bash <(wget -qO- https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/install.sh)"
 command -v bash >/dev/null 2>&1 || fail "Missing bash."
 command -v install >/dev/null 2>&1 || fail "Missing install command."
 

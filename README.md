@@ -9,25 +9,25 @@
 root 用户直接执行：
 
 ```bash
-bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)
+bash <(wget -qO- https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/install.sh)
 ```
 
 或使用 curl：
 
 ```bash
-bash <(curl -fsSL https://github.com/kuss0/caddy.sh/raw/main/install.sh)
+bash <(curl -fsSL https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/install.sh)
 ```
 
 普通用户用 sudo：
 
 ```bash
-wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh | sudo bash
+wget -qO- https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/install.sh | sudo bash
 ```
 
 只安装脚本、不立即初始化：
 
 ```bash
-bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh) --no-init
+bash <(wget -qO- https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/install.sh) --no-init
 ```
 
 `init` 会提示输入 Cloudflare API Token。Token 会保存到 `/etc/caddy/caddy.env`，权限为 `0640`。
