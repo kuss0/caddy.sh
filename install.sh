@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_URL="${SCRIPT_URL:-https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/caddy.sh}"
+SCRIPT_URL="${SCRIPT_URL:-https://github.com/kuss0/caddy.sh/raw/main/caddy.sh}"
 INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin/caddy.sh}"
 RUN_INIT="true"
 
@@ -41,7 +41,9 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 
-[[ "${EUID}" -eq 0 ]] || fail "Run as root, for example: bash <(wget -qO- https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/install.sh)"
+log "caddy.sh installer"
+
+[[ "${EUID}" -eq 0 ]] || fail "Run as root, for example: bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
 command -v bash >/dev/null 2>&1 || fail "Missing bash."
 command -v install >/dev/null 2>&1 || fail "Missing install command."
 
@@ -50,7 +52,7 @@ download_file() {
   if command -v curl >/dev/null 2>&1; then
     curl -fL --retry 3 --connect-timeout 15 -o "${dest}" "${url}"
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "${dest}" "${url}"
+    wget --tries=3 --timeout=15 -O "${dest}" "${url}"
   else
     fail "Missing curl or wget."
   fi
@@ -59,7 +61,6 @@ download_file() {
 tmp="$(mktemp)"
 trap 'rm -f "${tmp}"' EXIT INT TERM
 
-log "caddy.sh installer"
 log "Downloading caddy.sh from ${SCRIPT_URL}"
 download_file "${SCRIPT_URL}" "${tmp}" || fail "Failed to download caddy.sh."
 bash -n "${tmp}" || fail "Downloaded caddy.sh failed syntax validation."

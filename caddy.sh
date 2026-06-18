@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 CADDY_BIN="/usr/local/bin/caddy"
 CADDY_VERSION="${CADDY_VERSION:-v2.11.4}"
-SCRIPT_URL="${SCRIPT_URL:-https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/caddy.sh}"
+SCRIPT_URL="${SCRIPT_URL:-https://github.com/kuss0/caddy.sh/raw/main/caddy.sh}"
 CADDY_CONFIG="/etc/caddy"
 CADDYFILE="${CADDY_CONFIG}/Caddyfile"
 SITES_DIR="${CADDY_CONFIG}/conf.d"
@@ -68,7 +68,7 @@ download_file() {
   if command -v curl >/dev/null 2>&1; then
     curl -fL --retry 3 --connect-timeout 15 -o "${dest}" "${url}"
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "${dest}" "${url}"
+    wget --tries=3 --timeout=15 -O "${dest}" "${url}"
   else
     fail "Missing curl or wget."
   fi
@@ -76,7 +76,7 @@ download_file() {
 
 read_token() {
   local token
-  [[ -r /dev/tty ]] || fail "No TTY available for secure token input. Run interactively, for example: bash <(wget -qO- https://cdn.jsdelivr.net/gh/kuss0/caddy.sh@main/install.sh)"
+  [[ -r /dev/tty ]] || fail "No TTY available for secure token input. Run interactively, for example: bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
   printf 'Cloudflare API Token: ' >&2
   read -r -s token < /dev/tty
   printf '\n' >&2
@@ -147,7 +147,7 @@ download_caddy() {
   tmp="$(mktemp)"
   url="https://caddyserver.com/api/download?os=linux&arch=${arch}&p=github.com/caddy-dns/cloudflare&version=${CADDY_VERSION}"
 
-  log "Downloading Caddy ${CADDY_VERSION} with Cloudflare DNS plugin for linux/${arch}."
+  log "Downloading Caddy ${CADDY_VERSION} with Cloudflare DNS plugin for linux/${arch}. This can take a minute."
   if ! download_file "${url}" "${tmp}"; then
     rm -f "${tmp}"
     fail "Failed to download Caddy."
@@ -346,7 +346,7 @@ check_ports() {
 }
 
 cmd_init() {
-  local force="false"
+  local force="false" token=""
   if [[ "${1:-}" == "--force" ]]; then
     force="true"
     shift
@@ -356,18 +356,24 @@ cmd_init() {
     fail "Existing ${CADDYFILE} is unmanaged. Re-run init with --force to back it up and replace it."
   fi
 
-  ensure_caddy_binary
+  log "Checking ports 80/443."
+  check_ports
+
+  log "Preparing Caddy user and directories."
   ensure_user_and_dirs
 
   if [[ ! -f "${ENV_FILE}" ]]; then
-    write_env_file "$(read_token)"
+    token="$(read_token)"
+    write_env_file "${token}"
   else
     log "Keeping existing Cloudflare token in ${ENV_FILE}."
   fi
 
-  check_ports
+  log "Writing systemd service and base Caddyfile."
   write_service "${force}"
   write_base_caddyfile "${force}"
+
+  ensure_caddy_binary
   reload_caddy || fail "Caddy failed to initialize."
   log "Initialized Caddy. Add sites with: $0 add DOMAIN LOCAL_PORT"
 }
