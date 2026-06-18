@@ -30,11 +30,13 @@ Usage:
   $0 reload                        Validate and reload Caddy
   $0 self-update                   Update this script from GitHub
   $0 upgrade-caddy [VERSION]       Upgrade Caddy binary, for example v2.11.4
+  $0 uninstall [--purge]           Uninstall Caddy; --purge also removes config/data
 
 Examples:
   CADDY_VERSION=v2.11.4 $0 init
   $0 self-update
   $0 upgrade-caddy v2.11.4
+  $0 uninstall
   $0 init
   $0 add nezha.example.eu.org 8008
   $0 add cert.example.eu.org 8090
@@ -424,6 +426,41 @@ cmd_upgrade_caddy() {
   fi
 }
 
+cmd_uninstall() {
+  local purge="false"
+  if [[ "${1:-}" == "--purge" ]]; then
+    purge="true"
+    shift
+  fi
+  [[ "$#" -eq 0 ]] || fail "Usage: $0 uninstall [--purge]"
+
+  if systemctl list-unit-files caddy.service >/dev/null 2>&1 || [[ -f "${SERVICE_FILE}" ]]; then
+    systemctl stop caddy >/dev/null 2>&1 || true
+    systemctl disable caddy >/dev/null 2>&1 || true
+  fi
+
+  rm -f "${SERVICE_FILE}"
+  systemctl daemon-reload || true
+  systemctl reset-failed caddy >/dev/null 2>&1 || true
+
+  if [[ -e "${CADDY_BIN}" ]]; then
+    rm -f "${CADDY_BIN}"
+  fi
+
+  if [[ "${purge}" == "true" ]]; then
+    rm -rf "${CADDY_CONFIG}" "${CADDY_DATA}"
+    if id -u "${CADDY_USER}" >/dev/null 2>&1; then
+      userdel "${CADDY_USER}" 2>/dev/null || warn "Failed to remove user ${CADDY_USER}."
+    fi
+    if getent group "${CADDY_GROUP}" >/dev/null 2>&1; then
+      groupdel "${CADDY_GROUP}" 2>/dev/null || warn "Failed to remove group ${CADDY_GROUP}."
+    fi
+    log "Caddy uninstalled and purged."
+  else
+    log "Caddy uninstalled. Config and data were kept at ${CADDY_CONFIG} and ${CADDY_DATA}."
+  fi
+}
+
 cmd_set_token() {
   local token backup=""
   [[ "$#" -eq 0 ]] || fail "Usage: $0 set-token"
@@ -535,6 +572,7 @@ main() {
     reload) [[ "$#" -eq 0 ]] || fail "Usage: $0 reload"; reload_caddy || fail "Caddy reload failed." ;;
     self-update|update-script) cmd_self_update "$@" ;;
     upgrade-caddy|update-caddy) cmd_upgrade_caddy "$@" ;;
+    uninstall|remove-caddy) cmd_uninstall "$@" ;;
     help|-h|--help) usage ;;
     *) usage; fail "Unknown command: ${cmd}" ;;
   esac

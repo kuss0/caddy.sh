@@ -94,6 +94,18 @@ example.com {
 /usr/local/bin/caddy.sh upgrade-caddy v2.11.4
 ```
 
+卸载 Caddy，保留配置和证书数据：
+
+```bash
+/usr/local/bin/caddy.sh uninstall
+```
+
+彻底卸载，同时删除 `/etc/caddy`、`/var/lib/caddy` 和 caddy 用户/组：
+
+```bash
+/usr/local/bin/caddy.sh uninstall --purge
+```
+
 ## 固定 Caddy 版本
 
 脚本默认固定一个 Caddy 版本。需要指定版本时：
@@ -119,5 +131,6 @@ CADDY_VERSION=v2.11.4 /usr/local/bin/caddy.sh init
 - 覆盖已托管文件前会自动备份。
 - `self-update` 会先校验新脚本语法，再覆盖当前脚本，并保留 `.bak.*` 备份。
 - `upgrade-caddy` 会备份旧 Caddy 二进制；如果已初始化服务，会更新后自动校验并重载，失败时回滚二进制。
+- `uninstall` 默认保留配置和数据；只有 `uninstall --purge` 会删除配置、证书数据和 caddy 用户/组。
 - Cloudflare Token 输入时不会回显。
 - `set-token` 成功后会删除临时旧 Token 备份，避免旧密钥长期残留。
