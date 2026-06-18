@@ -4,7 +4,7 @@
 
 脚本使用 Cloudflare DNS-01 申请证书，所以证书签发本身不依赖 80 端口的 HTTP-01 验证。但 Caddy 作为对外 Web 服务时仍需要监听 80/443。
 
-## 一键安装初始化
+## 一键安装 / 维护菜单
 
 root 用户直接执行：
 
@@ -30,7 +30,21 @@ wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh | sudo bash
 bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh) --no-init
 ```
 
-`init` 会提示输入 Cloudflare API Token。Token 会保存到 `/etc/caddy/caddy.env`，权限为 `0640`。
+安装完成后会创建快捷命令 `c`，并进入维护菜单。以后直接输入：
+
+```bash
+c
+```
+
+即可通过数字选择初始化、添加站点、更新、卸载等操作。
+
+如果要跳过菜单并直接初始化：
+
+```bash
+bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh) --init
+```
+
+初始化会提示输入 Cloudflare API Token。Token 会保存到 `/etc/caddy/caddy.env`，权限为 `0640`。
 
 ## Cloudflare Token 权限
 
@@ -43,16 +57,22 @@ bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh) --no-ini
 
 ## 常用命令
 
+打开维护菜单：
+
+```bash
+c
+```
+
 初始化 Caddy：
 
 ```bash
-/usr/local/bin/caddy.sh init
+c init
 ```
 
 添加或更新站点：
 
 ```bash
-/usr/local/bin/caddy.sh add example.com 8080
+c add example.com 8080
 ```
 
 这会生成类似配置：
@@ -67,55 +87,55 @@ example.com {
 查看已启用站点：
 
 ```bash
-/usr/local/bin/caddy.sh list
+c list
 ```
 
 禁用站点：
 
 ```bash
-/usr/local/bin/caddy.sh remove example.com
+c remove example.com
 ```
 
 更新 Cloudflare Token：
 
 ```bash
-/usr/local/bin/caddy.sh set-token
+c set-token
 ```
 
 校验并重载：
 
 ```bash
-/usr/local/bin/caddy.sh reload
+c reload
 ```
 
 更新脚本自身：
 
 ```bash
-/usr/local/bin/caddy.sh self-update
+c self-update
 ```
 
 更新 Caddy 二进制到脚本默认版本：
 
 ```bash
-/usr/local/bin/caddy.sh upgrade-caddy
+c upgrade-caddy
 ```
 
 更新 Caddy 到指定版本：
 
 ```bash
-/usr/local/bin/caddy.sh upgrade-caddy v2.11.4
+c upgrade-caddy v2.11.4
 ```
 
 卸载 Caddy，保留配置和证书数据：
 
 ```bash
-/usr/local/bin/caddy.sh uninstall
+c uninstall
 ```
 
-彻底卸载，同时删除 `/etc/caddy`、`/var/lib/caddy` 和 caddy 用户/组：
+彻底卸载，同时删除 `/etc/caddy`、`/var/lib/caddy`、快捷命令 `c` 和 caddy 用户/组：
 
 ```bash
-/usr/local/bin/caddy.sh uninstall --purge
+c uninstall --purge
 ```
 
 ## 固定 Caddy 版本
@@ -143,6 +163,6 @@ CADDY_VERSION=v2.11.4 /usr/local/bin/caddy.sh init
 - 覆盖已托管文件前会自动备份。
 - `self-update` 会先校验新脚本语法，再覆盖当前脚本，并保留 `.bak.*` 备份。
 - `upgrade-caddy` 会备份旧 Caddy 二进制；如果已初始化服务，会更新后自动校验并重载，失败时回滚二进制。
-- `uninstall` 默认保留配置和数据；只有 `uninstall --purge` 会删除配置、证书数据和 caddy 用户/组。
+- `uninstall` 默认保留配置、数据和快捷命令 `c`；只有 `uninstall --purge` 会删除配置、证书数据、快捷命令 `c` 和 caddy 用户/组。
 - Cloudflare Token 输入时不会回显。
 - `set-token` 成功后会删除临时旧 Token 备份，避免旧密钥长期残留。

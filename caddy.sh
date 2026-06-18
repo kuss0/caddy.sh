@@ -4,6 +4,7 @@ set -Eeuo pipefail
 CADDY_BIN="/usr/local/bin/caddy"
 CADDY_VERSION="${CADDY_VERSION:-v2.11.4}"
 SCRIPT_URL="${SCRIPT_URL:-https://github.com/kuss0/caddy.sh/raw/main/caddy.sh}"
+SHORTCUT_BIN="${SHORTCUT_BIN:-/usr/local/bin/c}"
 CADDY_CONFIG="/etc/caddy"
 CADDYFILE="${CADDY_CONFIG}/Caddyfile"
 SITES_DIR="${CADDY_CONFIG}/conf.d"
@@ -19,9 +20,16 @@ log() { printf '[INFO] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
+have_tty() {
+  [[ -e /dev/tty ]] || return 1
+  { : < /dev/tty; } 2>/dev/null
+}
+
 usage() {
   cat <<EOF
 Usage:
+  $0                               Open interactive menu
+  $0 menu                          Open interactive menu
   $0 init [--force]                Install/init Caddy and save Cloudflare token once
   $0 set-token                     Update Cloudflare token
   $0 add DOMAIN LOCAL_PORT         Add or update one reverse proxy site
@@ -76,12 +84,23 @@ download_file() {
 
 read_token() {
   local token
-  [[ -r /dev/tty ]] || fail "No TTY available for secure token input. Run interactively, for example: bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
+  have_tty || fail "No TTY available for secure token input. Run interactively, for example: bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
   printf 'Cloudflare API Token: ' >&2
   read -r -s token < /dev/tty
   printf '\n' >&2
   validate_token "${token}"
   printf '%s' "${token}"
+}
+
+tty_read() {
+  local prompt="$1"
+  have_tty || fail "No TTY available for interactive input."
+  printf '%s' "${prompt}" > /dev/tty
+  IFS= read -r REPLY < /dev/tty
+}
+
+menu_pause() {
+  tty_read "Press Enter to continue..." || true
 }
 
 read_env_value() {
@@ -214,6 +233,23 @@ write_env_file() {
   chmod 0640 "${ENV_FILE}"
 }
 
+install_shortcut() {
+  local existing target
+  target="$(resolve_self_path)"
+  [[ -n "${target}" && -f "${target}" ]] || return 0
+  target="$(readlink -f "${target}")"
+  if [[ -e "${SHORTCUT_BIN}" || -L "${SHORTCUT_BIN}" ]]; then
+    existing="$(readlink -f "${SHORTCUT_BIN}" 2>/dev/null || true)"
+    if [[ "${existing}" != "${target}" ]]; then
+      warn "${SHORTCUT_BIN} already exists and does not point to ${target}; skipping shortcut."
+      return 0
+    fi
+  fi
+  ln -sf "${target}" "${SHORTCUT_BIN}"
+  chmod 0755 "${SHORTCUT_BIN}" 2>/dev/null || true
+  log "Shortcut installed: ${SHORTCUT_BIN}"
+}
+
 service_is_managed() {
   [[ -f "${SERVICE_FILE}" ]] || return 1
   grep -Fq "${MANAGED_MARKER}" "${SERVICE_FILE}" && return 0
@@ -327,11 +363,19 @@ reload_caddy() {
   }
 }
 
+cmd_reload() {
+  [[ "$#" -eq 0 ]] || fail "Usage: $0 reload"
+  reload_caddy || fail "Caddy reload failed."
+  log "Caddy reloaded."
+}
+
 resolve_self_path() {
+  local path
   if [[ "${0}" == */* ]]; then
     readlink -f "${0}"
   else
-    command -v "${0}"
+    path="$(command -v "${0}")"
+    readlink -f "${path}"
   fi
 }
 
@@ -375,6 +419,7 @@ cmd_init() {
 
   ensure_caddy_binary
   reload_caddy || fail "Caddy failed to initialize."
+  install_shortcut
   log "Initialized Caddy. Add sites with: $0 add DOMAIN LOCAL_PORT"
 }
 
@@ -399,6 +444,7 @@ cmd_self_update() {
   cp -a "${target}" "${backup}"
   install -m 0755 -o root -g root "${tmp}" "${target}"
   rm -f "${tmp}"
+  install_shortcut
   log "Updated script at ${target}."
   log "Backup saved at ${backup}."
 }
@@ -434,7 +480,7 @@ cmd_upgrade_caddy() {
 }
 
 cmd_uninstall() {
-  local purge="false"
+  local purge="false" shortcut_target="" script_target=""
   if [[ "${1:-}" == "--purge" ]]; then
     purge="true"
     shift
@@ -456,6 +502,12 @@ cmd_uninstall() {
 
   if [[ "${purge}" == "true" ]]; then
     rm -rf "${CADDY_CONFIG}" "${CADDY_DATA}"
+    script_target="$(resolve_self_path 2>/dev/null || true)"
+    [[ -z "${script_target}" ]] || script_target="$(readlink -f "${script_target}" 2>/dev/null || true)"
+    shortcut_target="$(readlink -f "${SHORTCUT_BIN}" 2>/dev/null || true)"
+    if [[ -n "${shortcut_target}" && ( "${shortcut_target}" == "${script_target}" || "${shortcut_target}" == "/usr/local/bin/caddy.sh" ) ]]; then
+      rm -f "${SHORTCUT_BIN}"
+    fi
     if id -u "${CADDY_USER}" >/dev/null 2>&1; then
       userdel "${CADDY_USER}" 2>/dev/null || warn "Failed to remove user ${CADDY_USER}."
     fi
@@ -559,24 +611,146 @@ cmd_list() {
   done
 }
 
+menu_status() {
+  local caddy_version="not installed" service_state="not installed" site_count="0"
+  if [[ -x "${CADDY_BIN}" ]]; then
+    caddy_version="$(${CADDY_BIN} version 2>/dev/null || printf 'installed')"
+  fi
+  if systemctl list-unit-files caddy.service >/dev/null 2>&1 || [[ -f "${SERVICE_FILE}" ]]; then
+    service_state="$(systemctl is-active caddy 2>/dev/null || true)"
+    [[ -n "${service_state}" ]] || service_state="inactive"
+  fi
+  if [[ -d "${SITES_DIR}" ]]; then
+    shopt -s nullglob
+    local files=("${SITES_DIR}"/*.caddy)
+    site_count="${#files[@]}"
+    [[ -f "${SITES_DIR}/00-empty.caddy" && "${site_count}" -gt 0 ]] && site_count="$((site_count - 1))"
+  fi
+
+  printf 'Caddy: %s\n' "${caddy_version}"
+  printf 'Service: %s\n' "${service_state}"
+  printf 'Sites: %s\n' "${site_count}"
+}
+
+menu_run() {
+  local status
+  ( "$@" )
+  status=$?
+  if [[ "${status}" -eq 0 ]]; then
+    log "Done."
+  else
+    warn "Operation failed with exit code ${status}."
+  fi
+  menu_pause
+}
+
+cmd_menu() {
+  local choice domain port version purge_choice
+  [[ "$#" -eq 0 ]] || fail "Usage: $0 menu"
+  have_tty || fail "No TTY available for interactive menu."
+
+  while true; do
+    printf '\n'
+    printf '======== caddy.sh 管理菜单 ========\n'
+    menu_status
+    printf '%s\n' '-----------------------------------'
+    printf ' 1) 初始化 / 安装 Caddy\n'
+    printf ' 2) 添加 / 更新反代站点\n'
+    printf ' 3) 删除站点\n'
+    printf ' 4) 查看站点列表\n'
+    printf ' 5) 校验并重载 Caddy\n'
+    printf ' 6) 更新 Cloudflare Token\n'
+    printf ' 7) 更新 Caddy 二进制\n'
+    printf ' 8) 更新脚本自身\n'
+    printf ' 9) 卸载 Caddy\n'
+    printf ' 0) 退出\n'
+    printf '===================================\n'
+
+    tty_read "请选择 [0-9]: "
+    choice="${REPLY}"
+    case "${choice}" in
+      1)
+        menu_run cmd_init
+        ;;
+      2)
+        tty_read "域名，例如 example.com: "
+        domain="${REPLY}"
+        tty_read "本地端口，例如 8080: "
+        port="${REPLY}"
+        menu_run cmd_add "${domain}" "${port}"
+        ;;
+      3)
+        ( cmd_list ) || true
+        tty_read "要删除的域名: "
+        domain="${REPLY}"
+        menu_run cmd_remove "${domain}"
+        ;;
+      4)
+        menu_run cmd_list
+        ;;
+      5)
+        menu_run cmd_reload
+        ;;
+      6)
+        menu_run cmd_set_token
+        ;;
+      7)
+        tty_read "Caddy 版本，留空使用 ${CADDY_VERSION}: "
+        version="${REPLY}"
+        if [[ -n "${version}" ]]; then
+          menu_run cmd_upgrade_caddy "${version}"
+        else
+          menu_run cmd_upgrade_caddy
+        fi
+        ;;
+      8)
+        menu_run cmd_self_update
+        ;;
+      9)
+        printf ' 1) 卸载，保留 /etc/caddy 和 /var/lib/caddy\n'
+        printf ' 2) 彻底卸载，同时删除配置、数据和 caddy 用户/组\n'
+        tty_read "请选择 [1-2]: "
+        purge_choice="${REPLY}"
+        case "${purge_choice}" in
+          1) menu_run cmd_uninstall ;;
+          2) menu_run cmd_uninstall --purge ;;
+          *) warn "Invalid choice."; menu_pause ;;
+        esac
+        ;;
+      0|q|Q|exit)
+        exit 0
+        ;;
+      *)
+        warn "Invalid choice: ${choice}"
+        menu_pause
+        ;;
+    esac
+  done
+}
+
 main() {
   need_root
   need_command systemctl
   need_command grep
+  need_command readlink
   need_command sed
   need_command ss
 
   local cmd="${1:-}"
-  [[ -n "${cmd}" ]] || { usage; exit 1; }
+  if [[ -z "${cmd}" ]]; then
+    cmd_menu
+    exit 0
+  fi
   shift || true
 
   case "${cmd}" in
+    menu) cmd_menu "$@" ;;
     init) cmd_init "$@" ;;
     set-token) cmd_set_token "$@" ;;
     add) cmd_add "$@" ;;
     remove|rm|delete) cmd_remove "$@" ;;
     list|ls) cmd_list "$@" ;;
-    reload) [[ "$#" -eq 0 ]] || fail "Usage: $0 reload"; reload_caddy || fail "Caddy reload failed." ;;
+    reload) cmd_reload "$@" ;;
     self-update|update-script) cmd_self_update "$@" ;;
     upgrade-caddy|update-caddy) cmd_upgrade_caddy "$@" ;;
     uninstall|remove-caddy) cmd_uninstall "$@" ;;
