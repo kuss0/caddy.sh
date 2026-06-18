@@ -76,6 +76,24 @@ example.com {
 /usr/local/bin/caddy.sh reload
 ```
 
+更新脚本自身：
+
+```bash
+/usr/local/bin/caddy.sh self-update
+```
+
+更新 Caddy 二进制到脚本默认版本：
+
+```bash
+/usr/local/bin/caddy.sh upgrade-caddy
+```
+
+更新 Caddy 到指定版本：
+
+```bash
+/usr/local/bin/caddy.sh upgrade-caddy v2.11.4
+```
+
 ## 固定 Caddy 版本
 
 脚本默认固定一个 Caddy 版本。需要指定版本时：
@@ -99,5 +117,7 @@ CADDY_VERSION=v2.11.4 /usr/local/bin/caddy.sh init
 - 如果 80/443 已被非 Caddy 进程占用，`init` 会直接失败。
 - 已存在的非托管 `/etc/caddy/Caddyfile` 或 `caddy.service` 不会被覆盖，除非使用 `init --force`。
 - 覆盖已托管文件前会自动备份。
+- `self-update` 会先校验新脚本语法，再覆盖当前脚本，并保留 `.bak.*` 备份。
+- `upgrade-caddy` 会备份旧 Caddy 二进制；如果已初始化服务，会更新后自动校验并重载，失败时回滚二进制。
 - Cloudflare Token 输入时不会回显。
 - `set-token` 成功后会删除临时旧 Token 备份，避免旧密钥长期残留。

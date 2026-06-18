@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 CADDY_BIN="/usr/local/bin/caddy"
 CADDY_VERSION="${CADDY_VERSION:-v2.11.4}"
+SCRIPT_URL="${SCRIPT_URL:-https://raw.githubusercontent.com/kuss0/caddy.sh/main/caddy.sh}"
 CADDY_CONFIG="/etc/caddy"
 CADDYFILE="${CADDY_CONFIG}/Caddyfile"
 SITES_DIR="${CADDY_CONFIG}/conf.d"
@@ -27,9 +28,13 @@ Usage:
   $0 remove DOMAIN                 Disable one site
   $0 list                          List enabled sites
   $0 reload                        Validate and reload Caddy
+  $0 self-update                   Update this script from GitHub
+  $0 upgrade-caddy [VERSION]       Upgrade Caddy binary, for example v2.11.4
 
 Examples:
   CADDY_VERSION=v2.11.4 $0 init
+  $0 self-update
+  $0 upgrade-caddy v2.11.4
   $0 init
   $0 add nezha.example.eu.org 8008
   $0 add cert.example.eu.org 8090
@@ -54,6 +59,17 @@ validate_token() {
 
 validate_caddy_version() {
   [[ "${CADDY_VERSION}" =~ ^v[0-9]+(\.[0-9]+){2}([-+][A-Za-z0-9._-]+)?$ ]] || fail "Invalid CADDY_VERSION: ${CADDY_VERSION}"
+}
+
+download_file() {
+  local url="$1" dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL --retry 3 --connect-timeout 15 -o "${dest}" "${url}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "${dest}" "${url}"
+  else
+    fail "Missing curl or wget."
+  fi
 }
 
 read_token() {
@@ -129,19 +145,9 @@ download_caddy() {
   url="https://caddyserver.com/api/download?os=linux&arch=${arch}&p=github.com/caddy-dns/cloudflare&version=${CADDY_VERSION}"
 
   log "Downloading Caddy ${CADDY_VERSION} with Cloudflare DNS plugin for linux/${arch}."
-  if command -v curl >/dev/null 2>&1; then
-    if ! curl -fL --retry 3 --connect-timeout 15 -o "${tmp}" "${url}"; then
-      rm -f "${tmp}"
-      fail "Failed to download Caddy."
-    fi
-  elif command -v wget >/dev/null 2>&1; then
-    if ! wget -O "${tmp}" "${url}"; then
-      rm -f "${tmp}"
-      fail "Failed to download Caddy."
-    fi
-  else
+  if ! download_file "${url}" "${tmp}"; then
     rm -f "${tmp}"
-    fail "Missing curl or wget."
+    fail "Failed to download Caddy."
   fi
 
   if ! chmod 0755 "${tmp}"; then
@@ -318,6 +324,14 @@ reload_caddy() {
   }
 }
 
+resolve_self_path() {
+  if [[ "${0}" == */* ]]; then
+    readlink -f "${0}"
+  else
+    command -v "${0}"
+  fi
+}
+
 check_ports() {
   local occupied
   occupied="$(ss -ltnp '( sport = :80 or sport = :443 )' 2>/dev/null | sed '1d' | grep -Fv 'users:(("caddy",' || true)"
@@ -353,6 +367,61 @@ cmd_init() {
   write_base_caddyfile "${force}"
   reload_caddy || fail "Caddy failed to initialize."
   log "Initialized Caddy. Add sites with: $0 add DOMAIN LOCAL_PORT"
+}
+
+cmd_self_update() {
+  local target tmp backup
+  [[ "$#" -eq 0 ]] || fail "Usage: $0 self-update"
+  target="$(resolve_self_path)"
+  [[ -n "${target}" ]] || fail "Unable to resolve script path."
+  [[ -f "${target}" ]] || fail "Script path is not a regular file: ${target}"
+
+  tmp="$(mktemp)"
+  if ! download_file "${SCRIPT_URL}" "${tmp}"; then
+    rm -f "${tmp}"
+    fail "Failed to download script update."
+  fi
+  if ! bash -n "${tmp}"; then
+    rm -f "${tmp}"
+    fail "Downloaded script failed syntax validation."
+  fi
+
+  backup="${target}.bak.$(date +%Y%m%d%H%M%S)"
+  cp -a "${target}" "${backup}"
+  install -m 0755 -o root -g root "${tmp}" "${target}"
+  rm -f "${tmp}"
+  log "Updated script at ${target}."
+  log "Backup saved at ${backup}."
+}
+
+cmd_upgrade_caddy() {
+  local backup=""
+  [[ "$#" -le 1 ]] || fail "Usage: $0 upgrade-caddy [VERSION]"
+  if [[ -n "${1:-}" ]]; then
+    CADDY_VERSION="$1"
+  fi
+  validate_caddy_version
+
+  if [[ -x "${CADDY_BIN}" ]]; then
+    backup="${CADDY_BIN}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "${CADDY_BIN}" "${backup}"
+    log "Backed up existing Caddy binary to ${backup}."
+  fi
+
+  download_caddy
+  if [[ -f "${CADDYFILE}" && -f "${ENV_FILE}" ]]; then
+    if ! reload_caddy; then
+      warn "Caddy reload failed after upgrade."
+      if [[ -n "${backup}" && -f "${backup}" ]]; then
+        warn "Rolling back Caddy binary from ${backup}."
+        cp -a "${backup}" "${CADDY_BIN}"
+        reload_caddy || true
+      fi
+      fail "Caddy upgrade failed; rolled back when possible."
+    fi
+  else
+    log "Caddy binary upgraded. Service is not initialized yet, so reload was skipped."
+  fi
 }
 
 cmd_set_token() {
@@ -464,6 +533,8 @@ main() {
     remove|rm|delete) cmd_remove "$@" ;;
     list|ls) cmd_list "$@" ;;
     reload) [[ "$#" -eq 0 ]] || fail "Usage: $0 reload"; reload_caddy || fail "Caddy reload failed." ;;
+    self-update|update-script) cmd_self_update "$@" ;;
+    upgrade-caddy|update-caddy) cmd_upgrade_caddy "$@" ;;
     help|-h|--help) usage ;;
     *) usage; fail "Unknown command: ${cmd}" ;;
   esac
