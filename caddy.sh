@@ -76,8 +76,9 @@ download_file() {
 
 read_token() {
   local token
+  [[ -r /dev/tty ]] || fail "No TTY available for secure token input. Run interactively, for example: bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
   printf 'Cloudflare API Token: ' >&2
-  read -r -s token
+  read -r -s token < /dev/tty
   printf '\n' >&2
   validate_token "${token}"
   printf '%s' "${token}"
