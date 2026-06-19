@@ -2,9 +2,11 @@
 set -Eeuo pipefail
 
 SCRIPT_URL="${SCRIPT_URL:-https://github.com/kuss0/caddy.sh/raw/main/caddy.sh}"
+INSTALLER_URL="${INSTALLER_URL:-https://github.com/kuss0/caddy.sh/raw/main/install.sh}"
 INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin/caddy.sh}"
 SHORTCUT_PATH="${SHORTCUT_PATH:-/usr/local/bin/c}"
 RUN_MODE="menu"
+ORIGINAL_ARGS=("$@")
 
 green='\033[0;32m'
 yellow='\033[1;33m'
@@ -27,6 +29,7 @@ Usage:
 
 Environment:
   SCRIPT_URL     Source URL for caddy.sh
+  INSTALLER_URL  Source URL for this installer
   INSTALL_PATH   Install path, default: /usr/local/bin/caddy.sh
   SHORTCUT_PATH  Shortcut path, default: /usr/local/bin/c
 EOF
@@ -58,11 +61,7 @@ done
 
 log "caddy.sh installer"
 
-[[ "${EUID}" -eq 0 ]] || fail "Run as root, for example: bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
 command -v bash >/dev/null 2>&1 || fail "Missing bash."
-command -v install >/dev/null 2>&1 || fail "Missing install command."
-command -v ln >/dev/null 2>&1 || fail "Missing ln command."
-command -v readlink >/dev/null 2>&1 || fail "Missing readlink command."
 
 download_file() {
   local url="$1" dest="$2"
@@ -74,6 +73,36 @@ download_file() {
     fail "Missing curl or wget."
   fi
 }
+
+rerun_as_root() {
+  local status tmp
+  command -v sudo >/dev/null 2>&1 || fail "Run as root or install sudo."
+  tmp="$(mktemp)"
+  log "Downloading installer for sudo re-run from ${INSTALLER_URL}"
+  if ! download_file "${INSTALLER_URL}" "${tmp}"; then
+    rm -f "${tmp}"
+    fail "Failed to download installer for sudo re-run."
+  fi
+  log "Re-running installer with sudo."
+  sudo env \
+    SCRIPT_URL="${SCRIPT_URL}" \
+    INSTALLER_URL="${INSTALLER_URL}" \
+    INSTALL_PATH="${INSTALL_PATH}" \
+    SHORTCUT_PATH="${SHORTCUT_PATH}" \
+    CADDY_VERSION="${CADDY_VERSION:-}" \
+    bash "${tmp}" "$@"
+  status=$?
+  rm -f "${tmp}"
+  exit "${status}"
+}
+
+if [[ "${EUID}" -ne 0 ]]; then
+  rerun_as_root "${ORIGINAL_ARGS[@]}"
+fi
+
+command -v install >/dev/null 2>&1 || fail "Missing install command."
+command -v ln >/dev/null 2>&1 || fail "Missing ln command."
+command -v readlink >/dev/null 2>&1 || fail "Missing readlink command."
 
 install_shortcut() {
   local existing="" target

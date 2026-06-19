@@ -52,12 +52,30 @@ Examples:
 EOF
 }
 
-need_root() {
-  [[ "${EUID}" -eq 0 ]] || fail "Run this script as root."
-}
-
 need_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+run_step() {
+  (
+    set -Eeuo pipefail
+    "$@"
+  )
+}
+
+ensure_root() {
+  local script
+  [[ "${EUID}" -eq 0 ]] && return
+  command -v sudo >/dev/null 2>&1 || fail "Run as root or install sudo."
+  command -v readlink >/dev/null 2>&1 || fail "Missing required command: readlink"
+  script="$(resolve_self_path)"
+  [[ -n "${script}" && -f "${script}" ]] || fail "Unable to resolve script path for sudo."
+  exec sudo env \
+    CADDY_ASSUME_YES="${CADDY_ASSUME_YES:-}" \
+    CADDY_VERSION="${CADDY_VERSION}" \
+    SCRIPT_URL="${SCRIPT_URL}" \
+    SHORTCUT_BIN="${SHORTCUT_BIN}" \
+    bash "${script}" "$@"
 }
 
 validate_token() {
@@ -84,7 +102,7 @@ download_file() {
 
 read_token() {
   local token
-  have_tty || fail "No TTY available for secure token input. Run interactively, for example: bash <(wget -qO- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
+  have_tty || fail "No TTY available for secure token input. Run interactively, for example: bash <(wget -O- https://github.com/kuss0/caddy.sh/raw/main/install.sh)"
   printf 'Cloudflare API Token: ' >&2
   read -r -s token < /dev/tty
   printf '\n' >&2
@@ -99,8 +117,35 @@ tty_read() {
   IFS= read -r REPLY < /dev/tty
 }
 
+confirm_purge() {
+  [[ "${CADDY_ASSUME_YES:-}" == "1" ]] && return
+  have_tty || fail "No TTY available for purge confirmation. Set CADDY_ASSUME_YES=1 to purge non-interactively."
+  tty_read "Type DELETE to permanently remove ${CADDY_CONFIG} and ${CADDY_DATA}: "
+  [[ "${REPLY}" == "DELETE" ]] || fail "Purge cancelled."
+}
+
 menu_pause() {
   tty_read "Press Enter to continue..." || true
+}
+
+backup_path_state() {
+  local path="$1" backup="$2"
+  if [[ -e "${path}" || -L "${path}" ]]; then
+    cp -a "${path}" "${backup}"
+    printf 'present'
+  else
+    printf 'absent'
+  fi
+}
+
+restore_path_state() {
+  local path="$1" backup="$2" state="$3"
+  if [[ "${state}" == "present" ]]; then
+    install -d -m 0755 "${path%/*}"
+    cp -a "${backup}" "${path}"
+  else
+    rm -f "${path}"
+  fi
 }
 
 read_env_value() {
@@ -370,11 +415,18 @@ cmd_reload() {
 }
 
 resolve_self_path() {
-  local path
-  if [[ "${0}" == */* ]]; then
-    readlink -f "${0}"
+  local path source
+  source="${BASH_SOURCE[0]}"
+  if [[ -f "${source}" ]]; then
+    readlink -f "${source}"
+  elif [[ "${source}" == */* ]]; then
+    readlink -f "${source}"
   else
-    path="$(command -v "${0}")"
+    path="$(command -v "${source}" 2>/dev/null || true)"
+    if [[ -z "${path}" ]]; then
+      path="$(command -v "${0}" 2>/dev/null || true)"
+    fi
+    [[ -n "${path}" ]] || return 1
     readlink -f "${path}"
   fi
 }
@@ -390,7 +442,7 @@ check_ports() {
 }
 
 cmd_init() {
-  local force="false" token=""
+  local caddyfile_state env_state force="false" init_status=0 service_state tmpdir token=""
   if [[ "${1:-}" == "--force" ]]; then
     force="true"
     shift
@@ -398,6 +450,9 @@ cmd_init() {
   [[ "$#" -eq 0 ]] || fail "Unexpected arguments for init."
   if [[ -f "${CADDYFILE}" && "${force}" != "true" ]] && ! grep -Fq "${MANAGED_MARKER}" "${CADDYFILE}"; then
     fail "Existing ${CADDYFILE} is unmanaged. Re-run init with --force to back it up and replace it."
+  fi
+  if [[ -f "${SERVICE_FILE}" && "${force}" != "true" ]] && ! service_is_managed; then
+    fail "Existing ${SERVICE_FILE} is unmanaged. Re-run init with --force to back it up and replace it."
   fi
 
   log "Checking ports 80/443."
@@ -408,17 +463,48 @@ cmd_init() {
 
   if [[ ! -f "${ENV_FILE}" ]]; then
     token="$(read_token)"
-    write_env_file "${token}"
   else
     log "Keeping existing Cloudflare token in ${ENV_FILE}."
   fi
 
-  log "Writing systemd service and base Caddyfile."
-  write_service "${force}"
-  write_base_caddyfile "${force}"
-
   ensure_caddy_binary
-  reload_caddy || fail "Caddy failed to initialize."
+
+  log "Writing systemd service and base Caddyfile."
+  tmpdir="$(mktemp -d)"
+  env_state="$(backup_path_state "${ENV_FILE}" "${tmpdir}/caddy.env")"
+  service_state="$(backup_path_state "${SERVICE_FILE}" "${tmpdir}/caddy.service")"
+  caddyfile_state="$(backup_path_state "${CADDYFILE}" "${tmpdir}/Caddyfile")"
+
+  set +e
+  if [[ -n "${token}" ]]; then
+    run_step write_env_file "${token}"
+    init_status=$?
+  fi
+  if [[ "${init_status}" -eq 0 ]]; then
+    run_step write_service "${force}"
+    init_status=$?
+  fi
+  if [[ "${init_status}" -eq 0 ]]; then
+    run_step write_base_caddyfile "${force}"
+    init_status=$?
+  fi
+  if [[ "${init_status}" -eq 0 ]]; then
+    run_step reload_caddy
+    init_status=$?
+  fi
+  set -e
+
+  if [[ "${init_status}" -ne 0 ]]; then
+    warn "Initialization failed. Rolling back changed config files."
+    restore_path_state "${ENV_FILE}" "${tmpdir}/caddy.env" "${env_state}"
+    restore_path_state "${SERVICE_FILE}" "${tmpdir}/caddy.service" "${service_state}"
+    restore_path_state "${CADDYFILE}" "${tmpdir}/Caddyfile" "${caddyfile_state}"
+    systemctl daemon-reload || true
+    rm -rf "${tmpdir}"
+    fail "Caddy failed to initialize; rolled back config files."
+  fi
+
+  rm -rf "${tmpdir}"
   install_shortcut
   log "Initialized Caddy. Add sites with: $0 add DOMAIN LOCAL_PORT"
 }
@@ -487,6 +573,10 @@ cmd_uninstall() {
   fi
   [[ "$#" -eq 0 ]] || fail "Usage: $0 uninstall [--purge]"
 
+  if [[ "${purge}" == "true" ]]; then
+    confirm_purge
+  fi
+
   if systemctl list-unit-files caddy.service >/dev/null 2>&1 || [[ -f "${SERVICE_FILE}" ]]; then
     systemctl stop caddy >/dev/null 2>&1 || true
     systemctl disable caddy >/dev/null 2>&1 || true
@@ -537,6 +627,7 @@ cmd_set_token() {
     if [[ -n "${backup}" && -f "${backup}" ]]; then
       cp -a "${backup}" "${ENV_FILE}"
       reload_caddy || true
+      rm -f "${backup}"
     fi
     fail "Failed to update Cloudflare token; rolled back."
   fi
@@ -601,7 +692,8 @@ cmd_remove() {
 }
 
 cmd_list() {
-  local file domain proxy
+  local file domain proxy nullglob_was_set="false"
+  shopt -q nullglob && nullglob_was_set="true"
   shopt -s nullglob
   for file in "${SITES_DIR}"/*.caddy; do
     [[ "$(basename "${file}")" != "00-empty.caddy" ]] || continue
@@ -609,10 +701,11 @@ cmd_list() {
     proxy="$(grep -m1 -E '^[[:space:]]*reverse_proxy[[:space:]]+' "${file}" | sed -E 's/^[[:space:]]*reverse_proxy[[:space:]]+//' || true)"
     printf '%s -> %s\n' "${domain:-$(basename "${file}" .caddy)}" "${proxy:-unknown}"
   done
+  [[ "${nullglob_was_set}" == "true" ]] || shopt -u nullglob
 }
 
 menu_status() {
-  local caddy_version="not installed" service_state="not installed" site_count="0"
+  local caddy_version="not installed" nullglob_was_set="false" service_state="not installed" site_count="0"
   if [[ -x "${CADDY_BIN}" ]]; then
     caddy_version="$(${CADDY_BIN} version 2>/dev/null || printf 'installed')"
   fi
@@ -621,10 +714,12 @@ menu_status() {
     [[ -n "${service_state}" ]] || service_state="inactive"
   fi
   if [[ -d "${SITES_DIR}" ]]; then
+    shopt -q nullglob && nullglob_was_set="true"
     shopt -s nullglob
     local files=("${SITES_DIR}"/*.caddy)
     site_count="${#files[@]}"
     [[ -f "${SITES_DIR}/00-empty.caddy" && "${site_count}" -gt 0 ]] && site_count="$((site_count - 1))"
+    [[ "${nullglob_was_set}" == "true" ]] || shopt -u nullglob
   fi
 
   printf 'Caddy: %s\n' "${caddy_version}"
@@ -634,8 +729,10 @@ menu_status() {
 
 menu_run() {
   local status
-  ( "$@" )
+  set +e
+  run_step "$@"
   status=$?
+  set -e
   if [[ "${status}" -eq 0 ]]; then
     log "Done."
   else
@@ -729,14 +826,24 @@ cmd_menu() {
 }
 
 main() {
-  need_root
+  local cmd="${1:-}"
+
+  case "${cmd}" in
+    help|-h|--help)
+      usage
+      exit 0
+      ;;
+  esac
+
+  ensure_root "$@"
   need_command systemctl
   need_command grep
+  need_command install
+  need_command ln
   need_command readlink
   need_command sed
   need_command ss
 
-  local cmd="${1:-}"
   if [[ -z "${cmd}" ]]; then
     cmd_menu
     exit 0
@@ -754,7 +861,6 @@ main() {
     self-update|update-script) cmd_self_update "$@" ;;
     upgrade-caddy|update-caddy) cmd_upgrade_caddy "$@" ;;
     uninstall|remove-caddy) cmd_uninstall "$@" ;;
-    help|-h|--help) usage ;;
     *) usage; fail "Unknown command: ${cmd}" ;;
   esac
 }
