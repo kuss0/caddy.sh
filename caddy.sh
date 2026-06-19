@@ -32,7 +32,6 @@ Usage:
   $0 menu                          Open interactive menu
   $0 init [--force]                Install/init Caddy and save Cloudflare token once
   $0 set-token                     Update Cloudflare token
-  $0 quick                         AI quick connect: scan local services and add a site
   $0 add DOMAIN LOCAL_PORT         Add or update one reverse proxy site
   $0 remove DOMAIN                 Disable one site
   $0 list                          List enabled sites
@@ -47,7 +46,6 @@ Examples:
   $0 upgrade-caddy v2.11.4
   $0 uninstall
   $0 init
-  $0 quick
   $0 add nezha.example.eu.org 8008
   $0 add cert.example.eu.org 8090
   $0 remove nezha.example.eu.org
@@ -637,22 +635,11 @@ cmd_set_token() {
   log "Cloudflare token updated."
 }
 
-validate_proxy_target() {
-  local port target="$1"
-  if [[ "${target}" =~ ^\[([0-9A-Fa-f:.]+)\]:([0-9]+)$ ]]; then
-    port="${BASH_REMATCH[2]}"
-  elif [[ "${target}" =~ ^[A-Za-z0-9._-]+:([0-9]+)$ ]]; then
-    port="${BASH_REMATCH[1]}"
-  else
-    fail "Invalid proxy target: ${target}"
-  fi
-  validate_port "${port}"
-}
-
-add_site() {
-  local backup="" domain="$1" proxy_target="$2" site_file tmp
+cmd_add() {
+  local domain="${1:-}" port="${2:-}" site_file tmp backup=""
+  [[ "$#" -eq 2 ]] || fail "Usage: $0 add DOMAIN LOCAL_PORT"
   validate_domain "${domain}"
-  validate_proxy_target "${proxy_target}"
+  validate_port "${port}"
   [[ -f "${CADDYFILE}" ]] || fail "Missing ${CADDYFILE}. Run: $0 init"
   [[ -f "${ENV_FILE}" ]] || fail "Missing ${ENV_FILE}. Run: $0 init"
   [[ -d "${SITES_DIR}" ]] || fail "Missing ${SITES_DIR}. Run: $0 init"
@@ -662,7 +649,7 @@ add_site() {
   cat > "${tmp}" <<EOF
 ${domain} {
     import CF_CERT
-    reverse_proxy ${proxy_target}
+    reverse_proxy 127.0.0.1:${port}
 }
 EOF
 
@@ -682,210 +669,7 @@ EOF
     reload_caddy || true
     fail "Failed to enable ${domain}; rolled back."
   fi
-  log "Enabled ${domain} -> ${proxy_target}"
-}
-
-cmd_add() {
-  local domain="${1:-}" port="${2:-}"
-  [[ "$#" -eq 2 ]] || fail "Usage: $0 add DOMAIN LOCAL_PORT"
-  validate_port "${port}"
-  add_site "${domain}" "127.0.0.1:${port}"
-}
-
-parse_listener_address() {
-  local address="$1"
-  LISTENER_HOST=""
-  LISTENER_PORT=""
-  if [[ "${address}" =~ ^\[(.+)\]:([0-9]+)$ ]]; then
-    LISTENER_HOST="${BASH_REMATCH[1]}"
-    LISTENER_PORT="${BASH_REMATCH[2]}"
-  elif [[ "${address}" =~ ^(.+):([0-9]+)$ ]]; then
-    LISTENER_HOST="${BASH_REMATCH[1]}"
-    LISTENER_PORT="${BASH_REMATCH[2]}"
-  else
-    return 1
-  fi
-  validate_port "${LISTENER_PORT}"
-}
-
-proxy_target_for_listener() {
-  local host="$1" port="$2"
-  case "${host}" in
-    0.0.0.0|\*|"")
-      printf '127.0.0.1:%s' "${port}"
-      ;;
-    ::|\[::\])
-      printf '[::1]:%s' "${port}"
-      ;;
-    *:*)
-      printf '[%s]:%s' "${host}" "${port}"
-      ;;
-    *)
-      printf '%s:%s' "${host}" "${port}"
-      ;;
-  esac
-}
-
-skip_quick_candidate() {
-  local port="$1" process_info="${2,,}"
-  if ((10#${port} < 1024)); then
-    return 0
-  fi
-
-  case "${port}" in
-    3128|8006)
-      return 0
-      ;;
-  esac
-
-  case "${process_info}" in
-    *sshd*|*rpcbind*|*tailscaled*|*cloudflared*|*pvedaemon*|*pveproxy*|*spiceproxy*)
-      return 0
-      ;;
-  esac
-
-  return 1
-}
-
-shorten_text() {
-  local max="${2:-70}" text="$1"
-  if ((${#text} > max)); then
-    printf '%s...' "${text:0:$((max - 3))}"
-  else
-    printf '%s' "${text}"
-  fi
-}
-
-collect_listener_candidates() {
-  local key line local_addr output="$1" port process_info state target
-  declare -A seen=()
-  : > "${output}"
-
-  while IFS= read -r line; do
-    [[ -n "${line}" ]] || continue
-    IFS=' ' read -r state _ _ local_addr _ process_info <<< "${line}"
-    [[ "${state}" == "LISTEN" ]] || continue
-    parse_listener_address "${local_addr}" || continue
-    port="${LISTENER_PORT}"
-    [[ "${port}" != "80" && "${port}" != "443" ]] || continue
-    process_info="${process_info:-unknown}"
-    skip_quick_candidate "${port}" "${process_info}" && continue
-    target="$(proxy_target_for_listener "${LISTENER_HOST}" "${port}")"
-    key="${port}|${target}"
-    [[ -z "${seen[${key}]:-}" ]] || continue
-    seen["${key}"]="1"
-    printf '%s\t%s\t%s\t%s\n' "${port}" "${LISTENER_HOST}" "${target}" "${process_info}" >> "${output}"
-  done < <(ss -H -ltnp 2>/dev/null || true)
-
-  sort -t $'\t' -k1,1n -k2,2 -o "${output}" "${output}"
-}
-
-candidate_count() {
-  local file="$1"
-  wc -l < "${file}" | tr -d '[:space:]'
-}
-
-print_listener_candidates() {
-  local file="$1" host index=0 port process_info short_process target
-  while IFS=$'\t' read -r port host target process_info; do
-    index=$((index + 1))
-    short_process="$(shorten_text "${process_info:-unknown}" 64)"
-    printf ' %2d) %-22s -> %-22s %s\n' "${index}" "${host}:${port}" "${target}" "${short_process}"
-  done < "${file}"
-}
-
-ensure_initialized_for_quick() {
-  if [[ -f "${CADDYFILE}" && -f "${ENV_FILE}" && -d "${SITES_DIR}" ]]; then
-    return
-  fi
-
-  tty_read "Caddy 尚未初始化，是否现在初始化？[Y/n]: "
-  case "${REPLY}" in
-    ""|y|Y|yes|YES)
-      cmd_init
-      ;;
-    *)
-      fail "Quick connect requires initialized Caddy."
-      ;;
-  esac
-}
-
-cmd_quick() {
-  local candidate choice count domain port selected target tmp
-  [[ "$#" -eq 0 ]] || fail "Usage: $0 quick"
-  have_tty || fail "No TTY available for quick connect."
-
-  ensure_initialized_for_quick
-  tmp="$(mktemp)"
-
-  while true; do
-    collect_listener_candidates "${tmp}"
-    count="$(candidate_count "${tmp}")"
-
-    printf '\n'
-    printf '======== AI 快速对接 ========\n'
-    if [[ "${count}" -gt 0 ]]; then
-      printf '检测到这些本机监听服务：\n'
-      print_listener_candidates "${tmp}"
-    else
-      warn "No local TCP listeners were detected."
-    fi
-    printf '%s\n' '----------------------------'
-    printf ' m) 手动输入本地端口\n'
-    printf ' r) 重新扫描\n'
-    printf ' 0) 取消\n'
-
-    tty_read "请选择服务编号 / m / r / 0: "
-    choice="${REPLY}"
-    case "${choice}" in
-      0|q|Q|exit)
-        rm -f "${tmp}"
-        log "Cancelled."
-        return
-        ;;
-      r|R)
-        continue
-        ;;
-      m|M)
-        tty_read "本地端口，例如 8080: "
-        port="${REPLY}"
-        validate_port "${port}"
-        target="127.0.0.1:${port}"
-        ;;
-      ''|*[!0-9]*)
-        warn "Invalid choice: ${choice}"
-        continue
-        ;;
-      *)
-        selected=$((10#${choice}))
-        if (( selected < 1 || selected > count )); then
-          warn "Invalid choice: ${choice}"
-          continue
-        fi
-        candidate="$(sed -n "${selected}p" "${tmp}")"
-        IFS=$'\t' read -r port _host target _process_info <<< "${candidate}"
-        ;;
-    esac
-
-    tty_read "对外域名，例如 app.example.com: "
-    domain="${REPLY}"
-    validate_domain "${domain}"
-
-    printf '即将创建：%s -> %s\n' "${domain}" "${target}"
-    tty_read "确认？[Y/n]: "
-    case "${REPLY}" in
-      ""|y|Y|yes|YES)
-        rm -f "${tmp}"
-        add_site "${domain}" "${target}"
-        return
-        ;;
-      *)
-        rm -f "${tmp}"
-        log "Cancelled."
-        return
-        ;;
-    esac
-  done
+  log "Enabled ${domain} -> 127.0.0.1:${port}"
 }
 
 cmd_remove() {
@@ -968,50 +752,46 @@ cmd_menu() {
     menu_status
     printf '%s\n' '-----------------------------------'
     printf ' 1) 初始化 / 安装 Caddy\n'
-    printf ' 2) AI 快速对接本机服务\n'
-    printf ' 3) 手动添加 / 更新反代站点\n'
-    printf ' 4) 删除站点\n'
-    printf ' 5) 查看站点列表\n'
-    printf ' 6) 校验并重载 Caddy\n'
-    printf ' 7) 更新 Cloudflare Token\n'
-    printf ' 8) 更新 Caddy 二进制\n'
-    printf ' 9) 更新脚本自身\n'
-    printf '10) 卸载 Caddy\n'
+    printf ' 2) 添加 / 更新反代站点\n'
+    printf ' 3) 删除站点\n'
+    printf ' 4) 查看站点列表\n'
+    printf ' 5) 校验并重载 Caddy\n'
+    printf ' 6) 更新 Cloudflare Token\n'
+    printf ' 7) 更新 Caddy 二进制\n'
+    printf ' 8) 更新脚本自身\n'
+    printf ' 9) 卸载 Caddy\n'
     printf ' 0) 退出\n'
     printf '===================================\n'
 
-    tty_read "请选择 [0-10]: "
+    tty_read "请选择 [0-9]: "
     choice="${REPLY}"
     case "${choice}" in
       1)
         menu_run cmd_init
         ;;
       2)
-        menu_run cmd_quick
-        ;;
-      3)
         tty_read "域名，例如 example.com: "
         domain="${REPLY}"
         tty_read "本地端口，例如 8080: "
         port="${REPLY}"
         menu_run cmd_add "${domain}" "${port}"
         ;;
-      4)
+      3)
         ( cmd_list ) || true
         tty_read "要删除的域名: "
         domain="${REPLY}"
         menu_run cmd_remove "${domain}"
         ;;
-      5)
+      4)
         menu_run cmd_list
         ;;
-      6)
+      5)
         menu_run cmd_reload
         ;;
-      7)
+      6)
         menu_run cmd_set_token
         ;;
-      8)
+      7)
         tty_read "Caddy 版本，留空使用 ${CADDY_VERSION}: "
         version="${REPLY}"
         if [[ -n "${version}" ]]; then
@@ -1020,10 +800,10 @@ cmd_menu() {
           menu_run cmd_upgrade_caddy
         fi
         ;;
-      9)
+      8)
         menu_run cmd_self_update
         ;;
-      10)
+      9)
         printf ' 1) 卸载，保留 /etc/caddy 和 /var/lib/caddy\n'
         printf ' 2) 彻底卸载，同时删除配置、数据和 caddy 用户/组\n'
         tty_read "请选择 [1-2]: "
@@ -1074,7 +854,6 @@ main() {
     menu) cmd_menu "$@" ;;
     init) cmd_init "$@" ;;
     set-token) cmd_set_token "$@" ;;
-    quick|ai|wizard) cmd_quick "$@" ;;
     add) cmd_add "$@" ;;
     remove|rm|delete) cmd_remove "$@" ;;
     list|ls) cmd_list "$@" ;;

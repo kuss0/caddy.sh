@@ -36,7 +36,7 @@ bash <(wget -O- https://github.com/kuss0/caddy.sh/raw/main/install.sh) --no-init
 c
 ```
 
-即可通过数字选择初始化、AI 快速对接、添加站点、更新、卸载等操作。
+即可通过数字选择初始化、添加站点、更新、卸载等操作。
 非 root 用户执行 `c` 时，脚本会自动尝试通过 `sudo` 提权。
 
 如果要跳过菜单并直接初始化：
@@ -69,16 +69,6 @@ c
 ```bash
 c init
 ```
-
-AI 快速对接本机服务：
-
-```bash
-c quick
-```
-
-同一功能也可以用 `c ai` 或 `c wizard` 打开。
-
-这会扫描本机正在监听的 TCP 服务，过滤常见系统和管理服务，显示端口、监听地址和进程，选择服务后输入域名，脚本会自动生成反向代理配置并重载 Caddy。该功能只做本机扫描和交互引导，不会调用外部 AI API，也不会上传本机端口信息。需要对接被过滤的端口时，可在快速对接里选择手动输入端口。
 
 添加或更新站点：
 
@@ -177,7 +167,6 @@ CADDY_VERSION=v2.11.4 /usr/local/bin/caddy.sh init
 
 - 如果 80/443 已被非 Caddy 进程占用，`init` 会直接失败。
 - 安装器和快捷命令支持非 root 自动 sudo；没有 sudo 时会明确报错。
-- `quick` 会扫描本机监听端口并引导选择；写入站点后仍使用和 `add` 相同的校验、reload 和失败回滚逻辑。
 - 已存在的非托管 `/etc/caddy/Caddyfile` 或 `caddy.service` 不会被覆盖，除非使用 `init --force`。
 - 覆盖已托管文件前会自动备份。
 - `self-update` 会先校验新脚本语法，再覆盖当前脚本，并保留 `.bak.*` 备份。
