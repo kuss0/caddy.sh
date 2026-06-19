@@ -4,6 +4,10 @@
 
 脚本使用 Cloudflare DNS-01 申请证书，所以证书签发本身不依赖 80 端口的 HTTP-01 验证。但 Caddy 作为对外 Web 服务时仍需要监听 80/443。
 
+## AI / Agent 接手
+
+Codex、Claude Code 等代码代理接手维护时，先读 `AGENTS.md`。Claude Code 也可以从 `CLAUDE.md` 进入，里面会指向同一份规则，避免说明分叉。
+
 ## 一键安装 / 维护菜单
 
 直接执行：
